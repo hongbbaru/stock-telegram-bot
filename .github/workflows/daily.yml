@@ -1,0 +1,26 @@
+name: Daily Stock Fear & Greed Report
+
+on:
+  schedule:
+    # UTC 기준 23:00 = 한국 시간(KST) 매일 아침 08:00 자동 실행
+    - cron: '0 23 * * *'
+  workflow_dispatch: # 필요할 때 수동으로도 실행 가능하게 설정
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install yfinance pandas numpy matplotlib requests
+
+      - name: Run Python script
+        run: python main.py
