@@ -1,187 +1,267 @@
+import io
 import os
+from datetime import datetime
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import requests
 import yfinance as yf
 
-# ---------------------------------------------------------
-# 1. 환경 변수 (Telegram Token & Chat ID)
-# ---------------------------------------------------------
-BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+# =========================================================
+# 1. 기본 설정 및 텔레그램 토큰 자동 감지 (Secrets / Colab 겸용)
+# =========================================================
+FALLBACK_TOKEN = '8837799916:AAHmTA_2eSRb1WV3xtnmeE2mSyGr64ohNOg'
+FALLBACK_CHAT_ID = '8611276891'
+
+# GitHub Secrets 값이 존재하면 우선 사용, 없으면 위 직접 입력값 사용
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN') or FALLBACK_TOKEN
+CHAT_ID = os.getenv('TELEGRAM_CHAT_ID') or FALLBACK_CHAT_ID
+
+# Token / Chat ID 앞뒤 공백 및 'bot' 중복 제거
+TELEGRAM_TOKEN = str(TELEGRAM_TOKEN).strip()
+if TELEGRAM_TOKEN.startswith('bot'):
+    TELEGRAM_TOKEN = TELEGRAM_TOKEN[3:]
+CHAT_ID = str(CHAT_ID).strip()
+
+START_DATE = '2019-01-01'
+END_DATE = datetime.now().strftime('%Y-%m-%d')
+
 
 # ---------------------------------------------------------
-# 2. 공통 지표 계산 함수
+# 2. 공통 계산 및 리포트 생성 함수 (max_dev 지정 가능)
 # ---------------------------------------------------------
+def get_single_report(ticker_type, max_dev=20.0):
+    if ticker_type == 'SOXX':
+        data = (
+            yf.download(
+                ['SOXX', '^VXN', 'TLT'],
+                start=START_DATE,
+                end=END_DATE,
+                progress=False,
+                auto_adjust=True,
+            )['Close']
+            .ffill()
+            .bfill()
+        )
+        main_asset, vxn, sub_asset = (
+            data['SOXX'],
+            data['^VXN'],
+            data['TLT'],
+        )
+        title_prefix = '[SOXX]'
+        chart_color = '#1f77b4'
+        sh_label = '안전자산'
+    else:  # KOSPI
+        data = (
+            yf.download(
+                ['^KS11', '^VXN', 'KRW=X'],
+                start=START_DATE,
+                end=END_DATE,
+                progress=False,
+                auto_adjust=True,
+            )['Close']
+            .ffill()
+            .bfill()
+        )
+        main_asset, vxn, sub_asset = (
+            data['^KS11'],
+            data['^VXN'],
+            data['KRW=X'],
+        )
+        title_prefix = '[KOSPI]'
+        chart_color = '#d62728'
+        sh_label = '환율수급'
 
-
-def fetch_and_calculate(ticker):
-    """주가 데이터를 받아오고 공포&탐욕 지수 하위 지표들을 계산합니다."""
-    df = yf.download(ticker, period='2y')
-
-    if isinstance(df.columns, pd.MultiIndex):
-        df = df['Close']
-    else:
-        df = df[['Close']]
-
-    df = pd.DataFrame(df)
-    df.columns = ['Close']
-    df = df.dropna()
-
-    # [지표 1] 모멘텀 (125일 이평선 대비 ±20% 괴리율 기반 0~100점)
-    df['SMA125'] = df['Close'].rolling(window=125).mean()
-    df['Dev_pct'] = ((df['Close'] - df['SMA125']) / df['SMA125']) * 100
-    max_dev = 20.0  # ±20% 범위
-    df['Momentum'] = (
-        (df['Dev_pct'] - (-max_dev)) / (max_dev - (-max_dev))
-    ) * 100
-    df['Momentum'] = np.clip(df['Momentum'], 0, 100)
-
-    # [지표 2] 변동성 (20일 변동성의 1년(252일) 상대 위치)
-    df['Log_Ret'] = np.log(df['Close'] / df['Close'].shift(1))
-    df['Vol20'] = df['Log_Ret'].rolling(window=20).std() * np.sqrt(252)
-    vol_min = df['Vol20'].rolling(window=252).min()
-    vol_max = df['Vol20'].rolling(window=252).max()
-    # 변동성은 높을수록 공포(낮은 점수)이므로 역산
-    df['Volatility'] = 100 - (
-        ((df['Vol20'] - vol_min) / (vol_max - vol_min)) * 100
+    # [1] 모멘텀(M): 지정된 max_dev (±20% 또는 ±10%) 적용
+    sma125 = main_asset.rolling(125).mean()
+    dev_pct = ((main_asset - sma125) / sma125) * 100
+    m = np.clip(
+        ((dev_pct - (-max_dev)) / (max_dev - (-max_dev))) * 100, 0, 100
     )
-    df['Volatility'] = np.clip(df['Volatility'], 0, 100)
 
-    # [지표 3] RSI (14일 상대강도지수)
-    delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
-    df['RSI'] = 100 - (100 / (1 + rs))
-    df['RSI'] = np.clip(df['RSI'], 0, 100)
-
-    # [종합] 공포&탐욕 종합 지수 (3개 지표 평균)
-    df['Fear_Greed_Index'] = (
-        df['Momentum'] + df['Volatility'] + df['RSI']
-    ) / 3.0
-
-    return df.dropna()
-
-
-# ---------------------------------------------------------
-# 3. 차트 생성 함수 (5년 전체 + 1년 확대)
-# ---------------------------------------------------------
-
-
-def create_chart(df, title_name, filename):
-    """지수 추이 차트를 생성하여 이미지 파일로 저장합니다."""
-    fig, (ax1, ax2) = plt.subplots(
-        2, 1, figsize=(10, 8), gridspec_kw={'height_ratios': [2, 1]}
+    # [2] 주가강도(S)
+    s = np.clip(
+        (main_asset - main_asset.rolling(252).min())
+        / (main_asset.rolling(252).max() - main_asset.rolling(252).min())
+        * 100,
+        0,
+        100,
     )
 
-    # 상단: 주가 추이
-    ax1.plot(df.index, df['Close'], label='Close Price', color='#1f77b4')
-    ax1.plot(
-        df.index,
-        df['SMA125'],
-        label='125-day SMA',
-        color='#ff7f0e',
-        linestyle='--',
+    # [3] 변동성안정(V)
+    v_raw = vxn - vxn.rolling(50).mean()
+    v = np.clip(
+        100
+        - (
+            (v_raw - v_raw.rolling(504).min())
+            / (v_raw.rolling(504).max() - v_raw.rolling(504).min())
+            * 100
+        ),
+        0,
+        100,
     )
-    ax1.set_title(f'{title_name} Price & 125 SMA', fontsize=12, fontweight='bold')
-    ax1.set_ylabel('Price')
-    ax1.legend(loc='upper left')
+
+    # [4] 수급/안전자산(SH)
+    sh_raw = main_asset.pct_change(20) - sub_asset.pct_change(20)
+    sh = np.clip(
+        (sh_raw - sh_raw.rolling(504).min())
+        / (sh_raw.rolling(504).max() - sh_raw.rolling(504).min())
+        * 100,
+        0,
+        100,
+    )
+
+    # 종합 지수(FG) 계산
+    df = pd.DataFrame(
+        {'M': m, 'S': s, 'V': v, 'SH': sh, 'FG': (m + s + v + sh) / 4}
+    ).dropna()
+    last = df.iloc[-1]
+
+    # 차트 생성
+    plt.close('all')
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+
+    dev_label = f'±{int(max_dev)}%'
+    ax1.plot(df.index, df['FG'], color=chart_color, linewidth=1.2)
+    ax1.axhline(75, color='r', ls='--', alpha=0.5)
+    ax1.axhline(25, color='g', ls='--', alpha=0.5)
+    ax1.set_title(
+        f'{title_prefix} 5-Year Fear & Greed Index (M: {dev_label})',
+        fontweight='bold',
+        fontsize=12,
+    )
+    ax1.set_ylim(0, 100)
     ax1.grid(True, alpha=0.3)
 
-    # 하단: 공포 탐욕 지수
-    ax2.plot(
-        df.index,
-        df['Fear_Greed_Index'],
-        label='Fear & Greed Index',
-        color='#2ca02c',
+    df_1y = df.tail(252)
+    ax2.plot(df_1y.index, df_1y['FG'], color=chart_color, linewidth=1.8)
+    ax2.axhline(75, color='r', ls='--', alpha=0.5)
+    ax2.axhline(25, color='g', ls='--', alpha=0.5)
+    ax2.set_title(
+        f'{title_prefix} 1-Year Fear & Greed Index (M: {dev_label})',
+        fontweight='bold',
+        fontsize=12,
     )
-    ax2.axhline(80, color='red', linestyle=':', label='Extreme Greed (80)')
-    ax2.axhline(20, color='blue', linestyle=':', label='Extreme Fear (20)')
-    ax2.axhline(50, color='gray', linestyle='-', alpha=0.5)
-    ax2.set_title(f'{title_name} Fear & Greed Index', fontsize=12)
-    ax2.set_ylabel('Index (0-100)')
     ax2.set_ylim(0, 100)
-    ax2.legend(loc='upper left')
     ax2.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig(filename, dpi=150)
-    plt.close()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+    buf.seek(0)
+    plt.close('all')
+
+    return (
+        round(last['FG'], 1),
+        round(last['M'], 1),
+        round(last['S'], 1),
+        round(last['V'], 1),
+        round(last['SH'], 1),
+        buf,
+        sh_label,
+    )
 
 
 # ---------------------------------------------------------
-# 4. 텔레그램 메시지 & 이미지 발송
+# 3. 상태 이모지 판정 함수
 # ---------------------------------------------------------
-
-
-def send_telegram_photo(caption, photo_path):
-    """텔레그램 봇으로 이미지와 캡션을 발송합니다."""
-    url = f'https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto'
-    with open(photo_path, 'rb') as photo:
-        payload = {'chat_id': CHAT_ID, 'caption': caption, 'parse_mode': 'HTML'}
-        files = {'photo': photo}
-        requests.post(url, data=payload, files=files)
+def get_state_emoji(score):
+    if score >= 80:
+        return '🔥 (극단적 탐욕)'
+    elif score >= 60:
+        return '📈 (탐욕)'
+    elif score >= 40:
+        return '⚖️ (중립)'
+    elif score >= 20:
+        return '📉 (공포)'
+    else:
+        return '🧊 (극단적 공포)'
 
 
 # ---------------------------------------------------------
-# 5. 메인 실행부
+# 4. 텔레그램 전송 헬퍼 함수
 # ---------------------------------------------------------
+def send_telegram_msg_and_photo(text, img_buf, filename):
+    url_msg = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
+    url_photo = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto'
+
+    res_msg = requests.post(
+        url_msg, data={'chat_id': CHAT_ID, 'text': text}
+    )
+    res_photo = requests.post(
+        url_photo,
+        data={'chat_id': CHAT_ID},
+        files={'photo': (filename, img_buf, 'image/png')},
+    )
+
+    if res_msg.status_code == 200 and res_photo.status_code == 200:
+        print(f'  └  {filename} 발송 성공!')
+    else:
+        print(f'  └ ❌ 발송 에러 발생: {res_msg.text} / {res_photo.text}')
 
 
-def main():
-    targets = [('SOXX', 'SOXX (Semiconductor ETF)'), ('^KS11', 'KOSPI')]
+# ---------------------------------------------------------
+# 5. 발송 메인 함수 (20% 세트 -> 10% 세트 순차 발송)
+# ---------------------------------------------------------
+def send_all_reports():
+    print('🚀 텔레그램 공포탐욕지수 발송 프로세스 시작...')
 
-    for ticker, name in targets:
-        try:
-            df = fetch_and_calculate(ticker)
-            latest = df.iloc[-1]
-            date_str = df.index[-1].strftime('%Y-%m-%d')
+    # =========================================================
+    # [SECTION 1] 모멘텀 ±20% 버전 (중장기 관점)
+    # =========================================================
+    print('[1/2] ±20% 중장기 버전 생성 및 발송 중...')
 
-            # 지수 단계 판단
-            score = latest['Fear_Greed_Index']
-            if score >= 80:
-                state = '🔥 극단적 탐욕 (Extreme Greed)'
-            elif score >= 60:
-                state = '📈 탐욕 (Greed)'
-            elif score >= 40:
-                state = '⚖️ 중립 (Neutral)'
-            elif score >= 20:
-                state = '📉 공포 (Fear)'
-            else:
-                state = '🧊 극단적 공포 (Extreme Fear)'
+    # SOXX (20%)
+    fg, m, s, v, sh, img, sh_lbl = get_single_report('SOXX', max_dev=20.0)
+    msg = (
+        f'📊 [반도체 SOXX 공포지수 (±20% 중장기): {fg} / 100 {get_state_emoji(fg)}]\n'
+        f'• 모멘텀(±20% 이격): {m}\n'
+        f'• 주가강도: {s}\n'
+        f'• 변동성안정: {v}\n'
+        f'• {sh_lbl}: {sh}'
+    )
+    send_telegram_msg_and_photo(msg, img, 'soxx_20.png')
 
-            # 텔레그램 캡션 텍스트 구성
-            caption = f"""
-<b>📊 {name} Daily Fear & Greed Report</b>
-📅 기준일자: {date_str}
+    # KOSPI (20%)
+    fg, m, s, v, sh, img, sh_lbl = get_single_report('KOSPI', max_dev=20.0)
+    msg = (
+        f'📊 [코스피 KOSPI 공포지수 (±20% 중장기): {fg} / 100 {get_state_emoji(fg)}]\n'
+        f'• 모멘텀(±20% 이격): {m}\n'
+        f'• 주가강도: {s}\n'
+        f'• 변동성안정: {v}\n'
+        f'• {sh_lbl}: {sh}'
+    )
+    send_telegram_msg_and_photo(msg, img, 'kospi_20.png')
 
-<b>종합 지수: {score:.1f} / 100 ({state})</b>
+    # =========================================================
+    # [SECTION 2] 모멘텀 ±10% 버전 (단기 민감 관점)
+    # =========================================================
+    print('[2/2] ±10% 단기 민감 버전 생성 및 발송 중...')
 
-<b>[세부 지표 현황]</b>
-• 현재가: {latest['Close']:,.2f}
-• 125일 이평선: {latest['SMA125']:,.2f}
-• 모멘텀(±20% 이격): <b>{latest['Momentum']:.1f}</b> / 100
-• 변동성 지수: <b>{latest['Volatility']:.1f}</b> / 100
-• RSI (14일): <b>{latest['RSI']:.1f}</b> / 100
-"""
+    # SOXX (10%)
+    fg, m, s, v, sh, img, sh_lbl = get_single_report('SOXX', max_dev=10.0)
+    msg = (
+        f'📊 [반도체 SOXX 공포지수 (±10% 단기): {fg} / 100 {get_state_emoji(fg)}]\n'
+        f'• 모멘텀(±10% 이격): {m}\n'
+        f'• 주가강도: {s}\n'
+        f'• 변동성안정: {v}\n'
+        f'• {sh_lbl}: {sh}'
+    )
+    send_telegram_msg_and_photo(msg, img, 'soxx_10.png')
 
-            # 차트 이미지 생성
-            filename = f'{ticker}_report.png'
-            create_chart(df, name, filename)
+    # KOSPI (10%)
+    fg, m, s, v, sh, img, sh_lbl = get_single_report('KOSPI', max_dev=10.0)
+    msg = (
+        f'📊 [코스피 KOSPI 공포지수 (±10% 단기): {fg} / 100 {get_state_emoji(fg)}]\n'
+        f'• 모멘텀(±10% 이격): {m}\n'
+        f'• 주가강도: {s}\n'
+        f'• 변동성안정: {v}\n'
+        f'• {sh_lbl}: {sh}'
+    )
+    send_telegram_msg_and_photo(msg, img, 'kospi_10.png')
 
-            # 발송
-            send_telegram_photo(caption, filename)
-            print(f'{name} 리포트 발송 성공!')
-
-            # 임시 파일 삭제
-            if os.path.exists(filename):
-                os.remove(filename)
-
-        except Exception as e:
-            print(f'{name} 처리 중 에러 발생: {e}')
+    print('🎉 [완료] 총 4개 리포트(±20% 2개 + ±10% 2개) 텔레그램 전송 완료!')
 
 
 if __name__ == '__main__':
-    main()
+    send_all_reports()
