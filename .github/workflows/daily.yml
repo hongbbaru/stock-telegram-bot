@@ -2,7 +2,8 @@ name: Daily Stock Fear & Greed Report
 
 on:
   schedule:
-    - cron: '5 21 * * *'
+    # UTC 21:03 = 한국 시간(KST) 매일 아침 06:03 (대기열을 피하기 위해 3분으로 설정)
+    - cron: '3 21 * * *'
   workflow_dispatch:
 
 jobs:
