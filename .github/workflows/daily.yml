@@ -2,9 +2,9 @@ name: Daily Stock Fear & Greed Report
 
 on:
   schedule:
-    # 한국 시간(KST) 아침 06:03에 정확히 실행되도록 지정
-    # (UTC 기준 전날 21:03)
-    - cron: '3 21 * * *'
+    # UTC 20:43 = 한국 시간(KST) 매일 아침 05:43
+    # 정각/5분 단위를 완전히 피해서 대기열 씹힘 방지
+    - cron: '43 20 * * *'
   workflow_dispatch:
 
 jobs:
