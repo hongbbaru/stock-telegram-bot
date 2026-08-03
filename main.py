@@ -13,11 +13,9 @@ import yfinance as yf
 FALLBACK_TOKEN = '8837799916:AAHmTA_2eSRb1WV3xtnmeE2mSyGr64ohNOg'
 FALLBACK_CHAT_ID = '8611276891'
 
-# GitHub Secrets 값이 존재하면 우선 사용, 없으면 위 직접 입력값 사용
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN') or FALLBACK_TOKEN
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID') or FALLBACK_CHAT_ID
 
-# Token / Chat ID 앞뒤 공백 및 'bot' 중복 제거
 TELEGRAM_TOKEN = str(TELEGRAM_TOKEN).strip()
 if TELEGRAM_TOKEN.startswith('bot'):
     TELEGRAM_TOKEN = TELEGRAM_TOKEN[3:]
@@ -28,7 +26,7 @@ END_DATE = datetime.now().strftime('%Y-%m-%d')
 
 
 # ---------------------------------------------------------
-# 2. 공통 계산 및 리포트 생성 함수 (max_dev 지정 가능)
+# 2. 공통 계산 및 리포트 생성 함수 (120일선 기준 수학적 정밀 계산)
 # ---------------------------------------------------------
 def get_single_report(ticker_type, max_dev=20.0):
     if ticker_type == 'SOXX':
@@ -72,12 +70,13 @@ def get_single_report(ticker_type, max_dev=20.0):
         chart_color = '#d62728'
         sh_label = '환율수급'
 
-    # [1] 모멘텀(M): 지정된 max_dev (±20% 또는 ±10%) 적용
-    sma125 = main_asset.rolling(125).mean()
-    dev_pct = ((main_asset - sma125) / sma125) * 100
-    m = np.clip(
-        ((dev_pct - (-max_dev)) / (max_dev - (-max_dev))) * 100, 0, 100
-    )
+    # [1] 모멘텀(M): 120일선 기준 이격도 정밀 계산 (120일선 밑 = 무조건 < 50점)
+    sma120 = main_asset.rolling(120).mean()
+    dev_pct = ((main_asset - sma120) / sma120) * 100
+    
+    # 0% (120일선) = 50점, +max_dev% = 100점, -max_dev% = 0점
+    m_raw = 50 + (dev_pct / max_dev) * 50
+    m = pd.Series(np.clip(m_raw, 0, 100), index=main_asset.index)
 
     # [2] 주가강도(S)
     s = np.clip(
