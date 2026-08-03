@@ -2,7 +2,7 @@ name: Daily Stock Fear & Greed Report
 
 on:
   schedule:
-    # 한국 시간(KST) 매일 아침 05:07 (미국 장 마감 직후 정시 발송)
+    # 한국 시간(KST) 매일 아침 05:07 실행 (UTC 기준 20:07)
     - cron: '7 20 * * *'
   workflow_dispatch:
 
