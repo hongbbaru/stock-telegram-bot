@@ -2,9 +2,9 @@ name: Daily Stock Fear & Greed Report
 
 on:
   schedule:
-    # UTC 20:43 = 한국 시간(KST) 매일 아침 05:43
-    # 정각/5분 단위를 완전히 피해서 대기열 씹힘 방지
-    - cron: '43 20 * * *'
+    # UTC 20:07 = 한국 시간(KST) 매일 아침 05:07
+    # 미국 장 마감(05:00) 직후 최신 데이터 수집 및 서버 대기열 우회
+    - cron: '7 20 * * *'
   workflow_dispatch:
 
 jobs:
