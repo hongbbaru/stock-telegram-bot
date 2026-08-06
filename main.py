@@ -1,6 +1,5 @@
 import io
 import os
-from datetime import datetime
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -21,20 +20,17 @@ if TELEGRAM_TOKEN.startswith('bot'):
     TELEGRAM_TOKEN = TELEGRAM_TOKEN[3:]
 CHAT_ID = str(CHAT_ID).strip()
 
-START_DATE = '2019-01-01'
-END_DATE = datetime.now().strftime('%Y-%m-%d')
-
 
 # ---------------------------------------------------------
-# 2. 공통 계산 및 리포트 생성 함수 (120일선 기준 수학적 정밀 계산)
+# 2. 보정된 공통 계산 및 리포트 생성 함수 (코랩 수집/스케일링 로직 보정)
 # ---------------------------------------------------------
 def get_single_report(ticker_type, max_dev=20.0):
+    # 최신 데이터를 확실하게 보장하기 위해 period='6y'로 수집
     if ticker_type == 'SOXX':
         data = (
             yf.download(
                 ['SOXX', '^VXN', 'TLT'],
-                start=START_DATE,
-                end=END_DATE,
+                period='6y',
                 progress=False,
                 auto_adjust=True,
             )['Close']
@@ -53,8 +49,7 @@ def get_single_report(ticker_type, max_dev=20.0):
         data = (
             yf.download(
                 ['^KS11', '^VXN', 'KRW=X'],
-                start=START_DATE,
-                end=END_DATE,
+                period='6y',
                 progress=False,
                 auto_adjust=True,
             )['Close']
@@ -70,45 +65,28 @@ def get_single_report(ticker_type, max_dev=20.0):
         chart_color = '#d62728'
         sh_label = '환율수급'
 
-    # [1] 모멘텀(M): 120일선 기준 이격도 정밀 계산 (120일선 밑 = 무조건 < 50점)
+    # [지표 1] 모멘텀(M): 120일선 기준 이격도 정밀 계산
     sma120 = main_asset.rolling(120).mean()
     dev_pct = ((main_asset - sma120) / sma120) * 100
-    
-    # 0% (120일선) = 50점, +max_dev% = 100점, -max_dev% = 0점
     m_raw = 50 + (dev_pct / max_dev) * 50
     m = pd.Series(np.clip(m_raw, 0, 100), index=main_asset.index)
 
-    # [2] 주가강도(S)
-    s = np.clip(
-        (main_asset - main_asset.rolling(252).min())
-        / (main_asset.rolling(252).max() - main_asset.rolling(252).min())
-        * 100,
-        0,
-        100,
-    )
+    # [지표 2] 주가강도(S): 52주(252일) 롤링 기준 정규화 (코랩 보정 로직)
+    low_52 = main_asset.rolling(252).min()
+    high_52 = main_asset.rolling(252).max()
+    s = np.clip((main_asset - low_52) / (high_52 - low_52) * 100, 0, 100)
 
-    # [3] 변동성안정(V)
+    # [지표 3] 변동성안정(V): VXN vs 50일 MA 차이의 롤링 정규화
     v_raw = vxn - vxn.rolling(50).mean()
-    v = np.clip(
-        100
-        - (
-            (v_raw - v_raw.rolling(504).min())
-            / (v_raw.rolling(504).max() - v_raw.rolling(504).min())
-            * 100
-        ),
-        0,
-        100,
-    )
+    v_min = v_raw.rolling(504).min()
+    v_max = v_raw.rolling(504).max()
+    v = np.clip(100 - ((v_raw - v_min) / (v_max - v_min) * 100), 0, 100)
 
-    # [4] 수급/안전자산(SH)
+    # [4] 수급/안전자산(SH): 20일 변동률 차이의 롤링 정규화 (코랩 보정 로직)
     sh_raw = main_asset.pct_change(20) - sub_asset.pct_change(20)
-    sh = np.clip(
-        (sh_raw - sh_raw.rolling(504).min())
-        / (sh_raw.rolling(504).max() - sh_raw.rolling(504).min())
-        * 100,
-        0,
-        100,
-    )
+    sh_min = sh_raw.rolling(504).min()
+    sh_max = sh_raw.rolling(504).max()
+    sh = np.clip((sh_raw - sh_min) / (sh_max - sh_min) * 100, 0, 100)
 
     # 종합 지수(FG) 계산
     df = pd.DataFrame(
@@ -162,7 +140,7 @@ def get_single_report(ticker_type, max_dev=20.0):
 
 
 # ---------------------------------------------------------
-# 3. 상태 이모지 판정 함수 (화산 분출 적용)
+# 3. 상태 이모지 판정 함수
 # ---------------------------------------------------------
 def get_state_emoji(score):
     if score >= 80:
@@ -205,12 +183,9 @@ def send_telegram_msg_and_photo(text, img_buf, filename):
 def send_all_reports():
     print('🚀 텔레그램 공포탐욕지수 발송 프로세스 시작...')
 
-    # =========================================================
     # [SECTION 1] 모멘텀 ±20% 버전 (중장기 관점)
-    # =========================================================
     print('[1/2] ±20% 중장기 버전 생성 및 발송 중...')
 
-    # SOXX (20%)
     fg, m, s, v, sh, img, sh_lbl = get_single_report('SOXX', max_dev=20.0)
     msg = (
         f'📊 [반도체 SOXX 공포지수 (±20% 중장기): {fg} / 100 {get_state_emoji(fg)}]\n'
@@ -221,7 +196,6 @@ def send_all_reports():
     )
     send_telegram_msg_and_photo(msg, img, 'soxx_20.png')
 
-    # KOSPI (20%)
     fg, m, s, v, sh, img, sh_lbl = get_single_report('KOSPI', max_dev=20.0)
     msg = (
         f'📊 [코스피 KOSPI 공포지수 (±20% 중장기): {fg} / 100 {get_state_emoji(fg)}]\n'
@@ -232,12 +206,9 @@ def send_all_reports():
     )
     send_telegram_msg_and_photo(msg, img, 'kospi_20.png')
 
-    # =========================================================
     # [SECTION 2] 모멘텀 ±10% 버전 (단기 민감 관점)
-    # =========================================================
     print('[2/2] ±10% 단기 민감 버전 생성 및 발송 중...')
 
-    # SOXX (10%)
     fg, m, s, v, sh, img, sh_lbl = get_single_report('SOXX', max_dev=10.0)
     msg = (
         f'📊 [반도체 SOXX 공포지수 (±10% 단기): {fg} / 100 {get_state_emoji(fg)}]\n'
@@ -248,7 +219,6 @@ def send_all_reports():
     )
     send_telegram_msg_and_photo(msg, img, 'soxx_10.png')
 
-    # KOSPI (10%)
     fg, m, s, v, sh, img, sh_lbl = get_single_report('KOSPI', max_dev=10.0)
     msg = (
         f'📊 [코스피 KOSPI 공포지수 (±10% 단기): {fg} / 100 {get_state_emoji(fg)}]\n'
