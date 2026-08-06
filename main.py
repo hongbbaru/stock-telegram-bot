@@ -22,10 +22,9 @@ CHAT_ID = str(CHAT_ID).strip()
 
 
 # ---------------------------------------------------------
-# 2. 보정된 공통 계산 및 리포트 생성 함수 (코랩 수집/스케일링 로직 보정)
+# 2. 공통 계산 및 리포트 생성 함수
 # ---------------------------------------------------------
 def get_single_report(ticker_type, max_dev=20.0):
-    # 최신 데이터를 확실하게 보장하기 위해 period='6y'로 수집
     if ticker_type == 'SOXX':
         data = (
             yf.download(
@@ -65,24 +64,24 @@ def get_single_report(ticker_type, max_dev=20.0):
         chart_color = '#d62728'
         sh_label = '환율수급'
 
-    # [지표 1] 모멘텀(M): 120일선 기준 이격도 정밀 계산
+    # [지표 1] 모멘텀(M)
     sma120 = main_asset.rolling(120).mean()
     dev_pct = ((main_asset - sma120) / sma120) * 100
     m_raw = 50 + (dev_pct / max_dev) * 50
     m = pd.Series(np.clip(m_raw, 0, 100), index=main_asset.index)
 
-    # [지표 2] 주가강도(S): 52주(252일) 롤링 기준 정규화 (코랩 보정 로직)
+    # [지표 2] 주가강도(S)
     low_52 = main_asset.rolling(252).min()
     high_52 = main_asset.rolling(252).max()
     s = np.clip((main_asset - low_52) / (high_52 - low_52) * 100, 0, 100)
 
-    # [지표 3] 변동성안정(V): VXN vs 50일 MA 차이의 롤링 정규화
+    # [지표 3] 변동성안정(V)
     v_raw = vxn - vxn.rolling(50).mean()
     v_min = v_raw.rolling(504).min()
     v_max = v_raw.rolling(504).max()
     v = np.clip(100 - ((v_raw - v_min) / (v_max - v_min) * 100), 0, 100)
 
-    # [4] 수급/안전자산(SH): 20일 변동률 차이의 롤링 정규화 (코랩 보정 로직)
+    # [4] 수급/안전자산(SH)
     sh_raw = main_asset.pct_change(20) - sub_asset.pct_change(20)
     sh_min = sh_raw.rolling(504).min()
     sh_max = sh_raw.rolling(504).max()
@@ -93,6 +92,9 @@ def get_single_report(ticker_type, max_dev=20.0):
         {'M': m, 'S': s, 'V': v, 'SH': sh, 'FG': (m + s + v + sh) / 4}
     ).dropna()
     last = df.iloc[-1]
+    
+    # 마지막 데이터 날짜 추출 (YYYY-MM-DD 형식)
+    last_date_str = df.index[-1].strftime('%Y-%m-%d')
 
     # 차트 생성
     plt.close('all')
@@ -136,6 +138,7 @@ def get_single_report(ticker_type, max_dev=20.0):
         round(last['SH'], 1),
         buf,
         sh_label,
+        last_date_str,  # 차트 기준 날짜 반환 추가
     )
 
 
@@ -186,8 +189,9 @@ def send_all_reports():
     # [SECTION 1] 모멘텀 ±20% 버전 (중장기 관점)
     print('[1/2] ±20% 중장기 버전 생성 및 발송 중...')
 
-    fg, m, s, v, sh, img, sh_lbl = get_single_report('SOXX', max_dev=20.0)
+    fg, m, s, v, sh, img, sh_lbl, date_str = get_single_report('SOXX', max_dev=20.0)
     msg = (
+        f'📅 [기준일자: {date_str}]\n'
         f'📊 [반도체 SOXX 공포지수 (±20% 중장기): {fg} / 100 {get_state_emoji(fg)}]\n'
         f'• 모멘텀(±20% 이격): {m}\n'
         f'• 주가강도: {s}\n'
@@ -196,8 +200,9 @@ def send_all_reports():
     )
     send_telegram_msg_and_photo(msg, img, 'soxx_20.png')
 
-    fg, m, s, v, sh, img, sh_lbl = get_single_report('KOSPI', max_dev=20.0)
+    fg, m, s, v, sh, img, sh_lbl, date_str = get_single_report('KOSPI', max_dev=20.0)
     msg = (
+        f'📅 [기준일자: {date_str}]\n'
         f'📊 [코스피 KOSPI 공포지수 (±20% 중장기): {fg} / 100 {get_state_emoji(fg)}]\n'
         f'• 모멘텀(±20% 이격): {m}\n'
         f'• 주가강도: {s}\n'
@@ -209,8 +214,9 @@ def send_all_reports():
     # [SECTION 2] 모멘텀 ±10% 버전 (단기 민감 관점)
     print('[2/2] ±10% 단기 민감 버전 생성 및 발송 중...')
 
-    fg, m, s, v, sh, img, sh_lbl = get_single_report('SOXX', max_dev=10.0)
+    fg, m, s, v, sh, img, sh_lbl, date_str = get_single_report('SOXX', max_dev=10.0)
     msg = (
+        f'📅 [기준일자: {date_str}]\n'
         f'📊 [반도체 SOXX 공포지수 (±10% 단기): {fg} / 100 {get_state_emoji(fg)}]\n'
         f'• 모멘텀(±10% 이격): {m}\n'
         f'• 주가강도: {s}\n'
@@ -219,8 +225,9 @@ def send_all_reports():
     )
     send_telegram_msg_and_photo(msg, img, 'soxx_10.png')
 
-    fg, m, s, v, sh, img, sh_lbl = get_single_report('KOSPI', max_dev=10.0)
+    fg, m, s, v, sh, img, sh_lbl, date_str = get_single_report('KOSPI', max_dev=10.0)
     msg = (
+        f'📅 [기준일자: {date_str}]\n'
         f'📊 [코스피 KOSPI 공포지수 (±10% 단기): {fg} / 100 {get_state_emoji(fg)}]\n'
         f'• 모멘텀(±10% 이격): {m}\n'
         f'• 주가강도: {s}\n'
